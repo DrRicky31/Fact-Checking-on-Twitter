@@ -110,7 +110,7 @@ data_path = '../data/russian-troll-tweets/'
 
 filelist = os.listdir(data_path)
 
-# Prendi solo i primi tre file
+# Prendi solo i primi 3 file
 filelist_subset = filelist[:2]
 
 # Leggi i primi tre file in dataframe
@@ -200,7 +200,7 @@ ids_test = [i for i in range(0, len(test_df))]
 
 weights = [len(labels_train)/w for w in [labels_train.count(a) for a in range(0, 3)]]
 weights = torch.FloatTensor(weights).to(device)
-weights
+print(weights)
 
 tokenizer = AutoTokenizer.from_pretrained('digitalepidemiologylab/covid-twitter-bert')
 
@@ -210,7 +210,7 @@ m = 0
 for tokens in tokenized_input['input_ids']:
     if len(tokens)>m:
         m=len(tokens)
-m
+print(m)
 
 # Imposta il massimo numero di token per ogni input
 MAX_LEN = 64
@@ -397,7 +397,8 @@ print("\t Eval F1: {}".format(best_F1))
 print("---"*25)
 print("\n")
 
-torch.save(best_state_dict, '../data/covid-latent/models/emotion_undersampling_CV'+str(k)+'_e'+str(best_epoch)+'_'+str(round(best_F1, 3))+'.pth')
+torch.save(best_state_dict, '../data/models/russian'+str(k)+'_e'+str(best_epoch)+'_'+str(round(best_F1, 3))+'.pth')
+
 
 """# Inference
 
@@ -407,15 +408,15 @@ torch.save(best_state_dict, '../data/covid-latent/models/emotion_undersampling_C
 #data_path = '../data/covid-latent/'
 #data_path = '../data/covid-latent/undersampling/'
 #data_path = '../data/stance-detection-in-covid-19-tweets/stay_at_home_orders/' #face_masks, school_closures, stay_at_home_orders, fauci
-#data_path = '../data/russian-troll-tweets/'
-data_path = '../data/COVIDSenti/'
+data_path = '../data/russian-troll-tweets/'
+#data_path = '../data/COVIDSenti/'
 #data_path = '../data/birdwatch/'
 #data_path = '../data/mediaeval22/old_task1/'
 
 filelist = os.listdir(data_path)
 
 # Prendi solo i primi tre file
-filelist_subset = filelist[:2]
+filelist_subset = filelist[:3]
 
 df_list = [pd.read_csv(data_path+file) for file in filelist_subset]
 
@@ -533,7 +534,7 @@ ids_test = [i for i in range(0, len(test_df))]
 
 """## Load model"""
 
-model.load_state_dict(torch.load('../data/covid-latent/models/emotion_undersampling_CV0_e2_0.622.pth'))
+model.load_state_dict(torch.load('../data/models/russian'+str(k)+'_e'+str(best_epoch)+'_'+str(round(best_F1, 3))+'.pth'))
 model.eval()
 
 logits_full = []
