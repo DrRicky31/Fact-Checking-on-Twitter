@@ -615,3 +615,4 @@ A
 #NHASF
 #sns.light_palette("seagreen", as_cmap=True)
 sns.heatmap(A, cmap = sns.light_palette("darkred", as_cmap=True), yticklabels=['Left', 'Other', 'Right'], xticklabels=['Unknown', 'NonEnglish', 'Commercial', 'NewsFeed', 'HashtagGamer', 'Fearmonger', 'LeftTroll', 'RightTroll'])
+plt.savefig('../heatmap.png')
