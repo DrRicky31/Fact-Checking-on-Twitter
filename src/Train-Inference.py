@@ -299,7 +299,6 @@ scheduler = ReduceLROnPlateau(optimizer, patience=4, factor=0.3)
 criterion = nn.CrossEntropyLoss(weight = weights)
 
 """## Training loop"""
-
 epochs = 15
 
 best_F1 = 0
@@ -399,220 +398,109 @@ print("\n")
 
 torch.save(best_state_dict, '../data/models/emotion_undersampling_CV'+str(k)+'_e'+str(best_epoch)+'_'+str(round(best_F1, 3))+'.pth')
 
-"""# Inference
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import from_json, col
+from pyspark.sql.types import StructType, StructField, StringType
+from tqdm import tqdm, trange
 
-## Load Data
-"""
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-#data_path = '../data/covid-latent/'
-#data_path = '../data/covid-latent/undersampling/'
-#data_path = '../data/stance-detection-in-covid-19-tweets/stay_at_home_orders/' #face_masks, school_closures, stay_at_home_orders, fauci
-data_path = '../data/russian-troll-tweets/'
-#data_path = '../data/COVIDSenti/'
-#data_path = '../data/birdwatch/'
-#data_path = '../data/mediaeval22/old_task1/'
+spark = SparkSession.builder.appName("COVIDTweetStream").getOrCreate()
 
-import random
+schema = StructType([
+    StructField("content", StringType(), True),
+    StructField("account_category", StringType(), True)
+])
 
-filelist = os.listdir(data_path)
+def normalize_text(texts):
+    return texts
 
-# Seleziona due file a caso dalla lista
-filelist_subset = random.sample(filelist, 2)
+def process_data(df):
+    train_df = df.sample(fraction=0.8, seed=42)
+    test_df = df.subtract(train_df)
 
+    tw_train = train_df.select('content').rdd.flatMap(lambda x: x).collect()
+    tw_test = test_df.select('content').rdd.flatMap(lambda x: x).collect()
 
-# Leggi i primi tre file in dataframe
-df_list = [pd.read_csv(data_path + file) for file in filelist_subset]
+    if normalize_test_flag:
+        tw_train = normalize_text(tw_train)
+        tw_test = normalize_text(tw_test)
 
-test_df = df_list[k]
+    labels_train = train_df.select('account_category').rdd.flatMap(lambda x: x).collect()
+    labels_train = [1 if cat in ["Unknown", "NonEnglish", "Commercial", "NewsFeed", "HashtagGamer", "Fearmonger"] else 0 if cat == "LeftTroll" else 2 for cat in labels_train]
 
-train_df = pd.concat(df_list[:k]+df_list[k+1:])
-test_df = pd.concat([train_df, test_df])
+    labels_test = test_df.select('account_category').rdd.flatMap(lambda x: x).collect()
+    labels_test = [1 if cat in ["Unknown", "NonEnglish", "Commercial", "NewsFeed", "HashtagGamer", "Fearmonger"] else 0 if cat == "LeftTroll" else 2 for cat in labels_test]
 
+    ids_test = [i for i in range(len(test_df.collect()))]
 
-#tw_train = train_df['tweet'].tolist()
-#tw_test = test_df['tweet'].tolist()
+    model.load_state_dict(torch.load('../data/models/russian0_e5_0.681.pth'))
+    model.eval()
 
-tw_train = train_df['content'].tolist()
-tw_test = test_df['content'].tolist()
-#ids_test = test_df['tweet'].tolist()
+    logits_full = []
+    ground_truth_full = []
+    ids_full = []
 
+    eval_loss = 0
+    steps = 0
+    for step, batch in enumerate(tqdm(test_dataloader)):
+        batch = tuple(t.to(device) for t in batch)
+        b_input_ids, b_input_mask, b_labels, b_token_type_ids, test_ids = batch
+        b_labels = b_labels.float()
 
-if normalize_test_flag:
-    tw_train = normalize_text(tw_train)
-    tw_test = normalize_text(tw_test)
+        with torch.no_grad():
+            logits = model(b_input_ids, b_token_type_ids, b_input_mask)
 
-"""
-#emotion
-train_df['emotion'][train_df['emotion'].isna()]='N'
-labels_train = train_df['emotion'].to_numpy()
-labels_train[labels_train=='N']=0
-labels_train[labels_train=='H']=1
-labels_train[labels_train=='A']=2
-labels_train[labels_train=='S']=3
-labels_train[labels_train=='F']=4
-labels_train = labels_train.tolist()
+        logits = logits.detach().cpu().tolist()
+        logits_full.extend(logits)
+        ground_truth = b_labels.detach().cpu().tolist()
+        ground_truth_full.extend(ground_truth)
+        ids = test_ids.detach().cpu().tolist()
+        ids_full.extend(ids)
+        steps += 1
 
-#sentiment
-labels_train = train_df['label'].to_numpy()
-labels_train[labels_train=='neu']=1
-labels_train[labels_train=='pos']=2
-labels_train[labels_train=='neg']=0
-labels_train = labels_train.tolist()
+    scheduler.step(eval_loss / steps)
+    LOSS = eval_loss / steps
+    F1 = metrics.f1_score(np.array(logits_full).argmax(axis=1), np.array(ground_truth_full), average='micro')
+    ACC = metrics.accuracy_score(np.array(logits_full).argmax(axis=1), np.array(ground_truth_full))
 
-"""
+    print("\t Eval loss: {}".format(LOSS))
+    print("\t Eval F1: {}".format(F1))
+    print("\t Eval ACC: {}".format(ACC))
+    print("---" * 25)
+    print("\n")
 
-#political bias
-labels_train = train_df['account_category'].to_numpy()
-labels_train[labels_train=="Unknown"]=1
-labels_train[labels_train=="NonEnglish"]=1
-labels_train[labels_train=="Commercial"]=1
-labels_train[labels_train=="NewsFeed"]=1
-labels_train[labels_train=="HashtagGamer"]=1
-labels_train[labels_train=="Fearmonger"]=1
-labels_train[labels_train=="LeftTroll"]=0
-labels_train[labels_train=="RightTroll"]=2
-labels_train = labels_train.tolist()
+    df_result = pd.DataFrame()
+    df_result['ids'] = ids_full
+    df_result['political_bias'] = np.array(logits_full).argmax(axis=1).tolist()
+    df_result.to_csv(data_path + 'emotion_full.csv', index=False)
 
-"""
+    A = np.zeros((3, 3))
 
-#stance
-labels_train = train_df['Stance'].to_numpy()
-labels_train[labels_train=="FAVOR"]=2
-labels_train[labels_train=="NONE"]=1
-labels_train[labels_train=="AGAINST"]=0
-labels_train = labels_train.tolist()
+    test_account_categories = test_df.select('account_category').rdd.flatMap(lambda x: x).collect()
+    political_biases = df_result.sort_values(by='ids')['political_bias'].tolist()
 
-#veracity
-labels_train = train_df['note'].to_numpy()
-labels_train[labels_train=="MISINFORMED_OR_POTENTIALLY_MISLEADING"]=0
-labels_train[labels_train=="NOT_MISLEADING"]=1
-labels_train = labels_train.tolist()
+    for i in trange(0, len(df_result)):
+        A[test_account_categories[i]][political_biases[i]] += 1
 
-#conspiracy
-labels_train = train_df['conspiracy'].tolist()
+    for i in range(0, 3):
+        A[i, :] = A[i, :] / A[i, :].sum()
 
-#emotion
-test_df['emotion'][test_df['emotion'].isna()]='N'
-labels_test = test_df['emotion'].to_numpy()
-labels_test[labels_test=='N']=0
-labels_test[labels_test=='H']=1
-labels_test[labels_test=='A']=2
-labels_test[labels_test=='S']=3
-labels_test[labels_test=='F']=4
-labels_test = labels_test.tolist()
+    import seaborn as sns
+    import matplotlib.pyplot as plt
 
-#sentiment
-labels_test = test_df['label'].to_numpy()
-labels_test[labels_test=='neu']=1
-labels_test[labels_test=='pos']=2
-labels_test[labels_test=='neg']=0
-labels_test = labels_test.tolist()
+    sns.heatmap(A, cmap=sns.light_palette("darkred", as_cmap=True), yticklabels=['Left', 'Other', 'Right'], xticklabels=['Positive', "Neutral", "Negative"])
+    plt.savefig('../heatmap.png')
 
-"""
+df = spark \
+    .readStream \
+    .format("socket") \
+    .option("host", "localhost") \
+    .option("port", 9999) \
+    .load()
 
-#political bias
-labels_test = test_df['account_category'].to_numpy()
-labels_test[labels_test=="Unknown"]=1
-labels_test[labels_test=="NonEnglish"]=1
-labels_test[labels_test=="Commercial"]=1
-labels_test[labels_test=="NewsFeed"]=1
-labels_test[labels_test=="HashtagGamer"]=1
-labels_test[labels_test=="Fearmonger"]=1
-labels_test[labels_test=="LeftTroll"]=0
-labels_test[labels_test=="RightTroll"]=2
-labels_test = labels_test.tolist()
+json_df = df.select(from_json(col("value"), schema).alias("data")).select("data.*")
 
-"""
+query = json_df.writeStream.foreachBatch(lambda batch_df, batch_id: process_data(batch_df)).start()
 
-#stance
-labels_test = test_df['Stance'].to_numpy()
-labels_test[labels_test=="FAVOR"]=2
-labels_test[labels_test=="NONE"]=1
-labels_test[labels_test=="AGAINST"]=0
-labels_test = labels_test.tolist()
-
-#veracity
-labels_test = test_df['note'].to_numpy()
-labels_test[labels_test=="MISINFORMED_OR_POTENTIALLY_MISLEADING"]=0
-labels_test[labels_test=="NOT_MISLEADING"]=1
-labels_test = labels_test.tolist()
-
-#conspiracy
-labels_test = test_df['conspiracy'].tolist()
-
-"""
-
-ids_test = [i for i in range(0, len(test_df))]
-
-#labels_train = [[l-1 for l in L] for L in labels_train]
-#labels_test = [[l-1 for l in L] for L in labels_test]
-
-"""## Load model"""
-
-model.load_state_dict(torch.load('../data/models/russian0_e5_0.681.pth'))
-model.eval()
-
-logits_full = []
-ground_truth_full = []
-ids_full = []
-
-eval_loss = 0
-steps=0
-for step, batch in enumerate(tqdm(test_dataloader)):
-
-    # Add batch to GPU
-    batch = tuple(t.to(device) for t in batch)
-
-    b_input_ids, b_input_mask, b_labels, b_token_type_ids, test_ids = batch
-
-    b_labels = b_labels.float()
-
-    with torch.no_grad():
-
-        logits = model(b_input_ids, b_token_type_ids, b_input_mask)
-        #loss = criterion(logits, b_labels.long())
-
-
-
-    logits = logits.detach().cpu().tolist()
-    logits_full.extend(logits)
-    ground_truth = b_labels.detach().cpu().tolist()
-    ground_truth_full.extend(ground_truth)
-    ids = test_ids.detach().cpu().tolist()
-    ids_full.extend(ids)
-    steps+=1
-    #eval_loss+=loss.detach().item()
-
-scheduler.step(eval_loss/steps)
-LOSS = eval_loss/steps
-F1 = metrics.f1_score(np.array(logits_full).argmax(axis=1), np.array(ground_truth_full), average='micro')
-ACC = metrics.accuracy_score(np.array(logits_full).argmax(axis=1), np.array(ground_truth_full))
-
-
-print("\t Eval loss: {}".format(LOSS))
-print("\t Eval F1: {}".format(F1))
-print("\t Eval ACC: {}".format(ACC))
-print("---"*25)
-print("\n")
-
-df = pd.DataFrame()
-
-df['ids'] = ids_full
-df['political_bias'] = np.array(logits_full).argmax(axis=1).tolist()
-#df.to_csv(data_path+'masks'+str(k)+'.csv', index=False)
-df.to_csv(data_path+'emotion_full.csv', index=False)
-
-"""# Visu"""
-
-A = np.zeros((3, 5))
-
-for i in trange(0, len(df)):
-    A[test_df['account_category'].tolist()[i]][df.sort_values(by='ids')['political_bias'].tolist()[i]]+=1
-for i in range(0, 3):
-    A[i,:] = A[i,:]/A[i,:].sum()
-A
-
-#NHASF
-#sns.light_palette("seagreen", as_cmap=True)
-sns.heatmap(A, cmap = sns.light_palette("darkred", as_cmap=True), yticklabels=['Left', 'Other', 'Right'], xticklabels=['Unknown', 'NonEnglish', 'Commercial', 'NewsFeed', 'HashtagGamer', 'Fearmonger', 'LeftTroll', 'RightTroll'])
-plt.savefig('../heatmap.png')
+query.awaitTermination()
