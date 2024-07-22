@@ -1,4 +1,4 @@
-# BigData: Fact-Checking for social networks veracity
+# Fact-Checking for social networks veracity
 ## Abstract
 Online misinformation has become a major concern in recent years and was further emphasized during the COVID-19 pandemic. Social media platforms, such as Twitter, can be serious tools of online disinformation. To better understand the spread of these fake-news, correlations between the following textual characteristics of tweets are analyzed: sentiment, political bias, and truthfulness. Several transformant-based classifiers are trained to detect these textual features and identify potential correlations using conditional label distributions. Our results show how tweets reflect trends in world politics and especially the most misleading ones could have negative impacts on public opinion.
 ## Code
